@@ -1,0 +1,10 @@
+#include <iostream>
+
+#include "Include/HTTP.h"
+
+int main() {
+	HTTP http = HTTP("0.0.0.0", 8080, "/mnt/Vault/");
+	
+	HTTP dash = HTTP("0.0.0.0", 8081, "");
+	return 0;
+}
