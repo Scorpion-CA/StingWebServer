@@ -1,5 +1,6 @@
 #include <iostream>
 #include <string>
+#include <thread>
 
 #include "Include/HTTP.h"
 
@@ -10,11 +11,11 @@ std::string GetExePath() {
 }
 
 int main() {
-	HTTP http = HTTP("0.0.0.0", 8080, "/mnt/Vault/");
+	HTTP http = HTTP("0.0.0.0", 8080, "/mnt/Vault/Website/");
 
 	// Under the present way it works, this will never be reached, will have to make 2 threads and run these 
 	// 2 servers in parallel
-	HTTP dash = HTTP("0.0.0.0", 8081, GetExePath());
+	HTTP dash = HTTP("0.0.0.0", 8081, GetExePath() + "/Dashboard/");
 
 	return 0;
 }
