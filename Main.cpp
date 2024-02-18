@@ -1,8 +1,10 @@
 #include <iostream>
 #include <string>
 #include <thread>
+#include <filesystem>
 
 #include "Include/HTTP.h"
+#include "Include/Config.h"
 
 std::string GetExePath() {
 	char result[256];
@@ -10,12 +12,18 @@ std::string GetExePath() {
 	return std::string(result, (count > 0) ? count : 0);
 }
 
+void StartThread(std::string ip, int Port, std::string Dir) { // Can't figure out how to make a thread be a constructor
+	HTTP http = HTTP(ip, Port, Dir);
+}
+
 int main() {
-	HTTP http = HTTP("0.0.0.0", 8080, "/mnt/Vault/Website/");
-
-	// Under the present way it works, this will never be reached, will have to make 2 threads and run these 
-	// 2 servers in parallel
-	HTTP dash = HTTP("0.0.0.0", 8081, GetExePath() + "/Dashboard/");
-
+	std::filesystem::create_directory("Configs");
+	std::thread t1(&StartThread, "0.0.0.0", 8080, "/mnt/Vault/Website/"); // Main server thread
+	while(!mainInitCompleted) {}
+	
+	std::filesystem::create_directory("Dashboard");
+	std::thread t2(&StartThread, "0.0.0.0", 8081, GetExePath() + "/Dashboard/");
+	t1.join();
+	t2.join();
 	return 0;
 }
