@@ -9,20 +9,23 @@
 #include <thread>
 #include <time.h>
 
+#include "Config.h"
+
 class CONNECTION;
 class CON;
 
 //change this to a veriable set in config, whenever I get around to that
-#define MAX_CLIENTS 1024
-#define HTTP_CHUNK_LEN 2048
-#define FILE_CHUNK_LEN 65536
-#define CONNECTION_TIMEOUT 10000000
-#define WEBSITE_ENTRY "index.html"
-#define SERVER_VERSION "Sting Web Server - Linux - 0.0.1"
+#define MAX_CONNECTIONS std::stoi(cfg["MAX_CONNECTIONS"])
+#define HTTP_CHUNK_LEN std::stoi(cfg["HTTP_CHUNK_LEN"])
+#define FILE_CHUNK_LEN std::stoi(cfg["FILE_CHUNK_LEN"])
+#define CONNECTION_TIMEOUT std::stoi(cfg["CONNECTION_TIMEOUT"])
+#define WEBSITE_ENTRY cfg["WEBSITE_ENTRY"]
+#define SERVER_VERSION cfg["SERVER_VERSION"]
 // Eventually add a config option for the default option for starting file, like index.html
 // Eventually add this to a config, and add a check so that if it is 0, then the option is off
 
 inline bool mainInitCompleted = false; // I know, global variables booooo but I needed a way to make sure main was done
+inline bool killServer = false;
 
 // Enumerates HTTP request types for switch statement later
 enum REQTYPE {
@@ -60,6 +63,8 @@ private:
 	std::string m_sURL; // The URL of something like a GET or HEAD request
 	std::string m_sContent; // The content of the HTTP response/request
 	std::map<std::string, std::string> m_mHeaders; // A map storing the request/response headers
+	std::map<std::string, std::string> m_mVars;
+	// Add something for content variables, like Stop=StopServer
 };
 
 class HTTP {
@@ -67,7 +72,7 @@ public:
 	friend CON;
 public:
 	HTTP();
-	HTTP(std::string IPAddr, int Port, std::string Dir); // Initializes the server and sets a directory for the website
+	HTTP(std::string IPAddr, int Port, std::string Dir, CFG* Config, bool Dashboard = false); // Initializes the server and sets a directory for the website
 	~HTTP(); // Calls CloseServer
 public: // I don't like this but it didn't play nice with threads
 	int StartServer(); // Starts the server
@@ -79,6 +84,7 @@ public: // I don't like this but it didn't play nice with threads
 	void GetResource(HMESSAGE* msg, int Sock, bool header); // Reads a document so that it can be sent to the client
 	int SendDocument(int fd, int Sock); // Reads a text document, returns how many bytes are left so it can be looped
 	int SendResource(int fd, int Sock, bool header); // Reads a resource in binary, returns how many bytes are left so it can be looped
+	void HouseKeeper(); // Loops through the list of connections and kills any that have been idle too long
 private:
 	std::string m_sIPAddr; // IP address the server is to be hosted on
 	int m_iPort; // The port the server uses, generally 80 or 8080, 8081 for the dashboard
@@ -89,7 +95,9 @@ private:
 	unsigned int m_uSocketAddressLen; // Length of the SockAddr structure
 	std::string m_sDir; // The directory for the server, may need to be cleansed so it can't be used to ../ into the root directory
 private:
-	void HouseKeeper(); // Loops through the list of connections and kills any that have been idle too long
+	CFG cfg;
+	bool isDashboard = false;
+private:
 	std::vector<CON> m_vConnections; // Stores active connections, need to figure out if there's a way to like
 };									 // loop through it and make it smaller and get rid of the stale connection inside
 									 // could be done by making it a pointer, and having part of the housekeeper

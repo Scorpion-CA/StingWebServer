@@ -1,5 +1,6 @@
 #include "Include/HTTP.h"
 #include "Include/Connections.h"
+#include "Include/Config.h"
 
 #include <iostream>
 #include <sstream>
@@ -7,23 +8,43 @@
 #include <fcntl.h>
 #include <thread>
 #include <sys/stat.h>
+#include <map>
 
-HTTP::HTTP(std::string IPAddr, int Port, std::string Dir) : m_sIPAddr(IPAddr), m_iPort(Port), m_iSocket(), m_iClientSocket(),
-										   					m_lIncomingMessage(), m_SocketAddr(), 
-															m_uSocketAddressLen(sizeof(m_SocketAddr)), m_sDir(Dir) {
+HTTP::HTTP(std::string IPAddr, int Port, std::string Dir, CFG* Config, bool dashboard) : m_sIPAddr(IPAddr), m_iPort(Port), m_iSocket(), m_iClientSocket(),
+										   								 				 m_lIncomingMessage(), m_SocketAddr(), 
+																		 				 m_uSocketAddressLen(sizeof(m_SocketAddr)), m_sDir(Dir) {
 	m_SocketAddr.sin_family = AF_INET;
 	m_SocketAddr.sin_port = htons(m_iPort);
 	m_SocketAddr.sin_addr.s_addr = inet_addr(m_sIPAddr.c_str());
+	cfg = *Config;
+	isDashboard = dashboard;
+
 	StartServer();
 }
 
+HTTP::HTTP() {
+
+}
+
 HTTP::~HTTP() {
+	for (auto& i : m_vConnections) {
+		close(i.m_iSocket);
+
+		std::cout << "[CLOSED] Closed " << i.m_iSocket << std::endl;
+
+		pthread_cancel(i.m_thread.native_handle());
+		i.m_thread.join();
+	}
+
+	m_vConnections.clear();
+
 	CloseServer();
 }
 
 void HTTP::HandleMessage(int Sock, CON* Parent) {
 	std::string req; // The string to hold the entire request
-	char buf[HTTP_CHUNK_LEN + 1] = {0}; // char array to be read into, with an extra for a null terminator
+	char* buf = (char*)malloc(HTTP_CHUNK_LEN + 1); // char array to be read into, with an extra for a null terminator
+	memset(buf, 0, HTTP_CHUNK_LEN + 1);
 	int count = HTTP_CHUNK_LEN; // holds the amount of bytes remaining to be read, initialized to the size of the char array - 1
 	bool hasHitDoubleEndline = false; // Flag for if the client has sent the \r\n\r\n, which means the message is done
 	int contentRead = 0;
@@ -31,12 +52,14 @@ void HTTP::HandleMessage(int Sock, CON* Parent) {
 	int contentSize = 0;
 	bool hasContent = false;
 	bool hasHitEndOfContent = false;
+	bool firstRead = true;
 
 	// HTTP Chunking, this took longer than it should have and I was so close like 80 times
 	// More for large requests, I will eventually add the ability for the message to be broken up into chunks
+
 	while(1) {
 		count = HTTP_CHUNK_LEN;
-		while (count == HTTP_CHUNK_LEN || !hasHitDoubleEndline || (hasContent && contentRead != contentSize)) { // Only reads if count is equal to the size of the buffer, because if it's less then that
+		while (count == HTTP_CHUNK_LEN || !hasHitDoubleEndline || (hasContent && contentRead != contentSize && !hasHitEndOfContent)) { // Only reads if count is equal to the size of the buffer, because if it's less then that
 			count = read(Sock, buf, HTTP_CHUNK_LEN); // then the last read was the last data, and doing it would get the program stuck
 			
 			if (count < 0) {
@@ -47,35 +70,34 @@ void HTTP::HandleMessage(int Sock, CON* Parent) {
 				return;				
 			}
 
-			if (!hasHitDoubleEndline) { // Checks if we have hit the end of the headers yet
+			if (!hasHitDoubleEndline)  // Checks if we have hit the end of the headers yet
 				for (int i = 0; i < count; i++) 
-					if (buf[i] == '\n' && buf[i - 1] == '\r' && buf[i - 2] == '\n' && buf[i - 3] == '\r') {
+					if (buf[i] == '\n' && buf[i - 2] == '\n' && buf[i - 1] == '\r' && buf[i - 3] == '\r') {
 						hasHitDoubleEndline = true;
-						contentStart = i;
+						contentStart = i + 1;
 					}
-			}
 
 			if (count == HTTP_CHUNK_LEN)
 				buf[HTTP_CHUNK_LEN] = '\0'; // Adds null terminator so that it goes into the std::string properly
 			if (count > 0) req += std::string(buf); // adds the array to the req std::string
 			memset(buf, 0, HTTP_CHUNK_LEN + 1); // sets the array to 0s after being done with it, good practise I think
-		
-			if (hasHitDoubleEndline && hasContent) {
-				contentRead += count;
-				std::cout << contentRead << std::endl;
-			}
-			
-			if (hasHitDoubleEndline) {		// I have no way to know if this works yet so lol
-				HMESSAGE headers(req);      // I mean logically it should work but things never work logically when they should
+
+			HMESSAGE headers;
+			if (!req.empty())
+
+			if (hasHitDoubleEndline) {
+				headers = HMESSAGE(req);
 			
 				if (headers.m_mHeaders.count("Content-Length")) {
 					hasContent = true;
 					contentSize = std::stoi(headers["Content-Length"]);
-					contentRead = count - contentSize;
+					contentRead = count - contentStart;
 				}
 			}
-		}
-		
+
+			firstRead = false;
+		}						// For some reason, sometimes when people press the button I guess the browsers are
+								// Expecting something different so they don't accept the web page
 		if (count == 0)
 			continue;
 
@@ -100,7 +122,15 @@ void HTTP::HandleMessage(int Sock, CON* Parent) {
 				break;
 			}
 			case REQTYPE::POST: {
-				break;
+				if (isDashboard) // temporary proof of concept, this will have to be behind all sorts of authentication
+					if (msg.m_mVars["Stop"] == "StopServer") { // and "are you sures" and shit
+					std::cout << "[SERVER] Killing Server" << std::endl;
+						// Find way to make it so it asks for auth, even when it's refreshing because it auto submits
+						killServer = true; // forms on refresh, so if someone closes the server and refreshes when
+					}					// the server comes back up it just kills the server again
+
+				GetResource(&msg, Sock, true); // I think it will actually accept anything back here, it doesn't
+				break;						   // Have to be a resource unless it has a URL requesting one
 			}
 			case REQTYPE::PUT: {
 				break;
@@ -129,6 +159,7 @@ void HTTP::HandleMessage(int Sock, CON* Parent) {
 		req.clear();
 		if (count > 0) Parent->m_cTimer = std::clock();
 	}
+	free(buf);
 	return;
 }
 
@@ -157,17 +188,12 @@ int HTTP::StartServer() {
 
 bool HTTP::StartListen() {
 	// Listen for connections to the socket, with the max number of connections set in config
-	if (listen(m_iSocket, MAX_CLIENTS) < 0) {
+	if (listen(m_iSocket, MAX_CONNECTIONS) < 0) {
 		std::cout << "[ERROR] Failed to start socket listen" << std::endl;
 		return false;
 	}
-	std::cout << "Listening on " << inet_ntoa(m_SocketAddr.sin_addr)
+	std::cout << "[SERVER] Listening on " << inet_ntoa(m_SocketAddr.sin_addr)
 			  << " Port: " << ntohs(m_SocketAddr.sin_port) << std::endl;
-
-	std::cout << "Starting HouseKeeper thread" << std::endl << std::endl;
-
-	std::thread HouseKeeperThread(&HTTP::HouseKeeper, this); // Creates the housekeeper thread to monitor different
-	HouseKeeperThread.detach();						  		 // connections and kill idle ones and detach it
 
 	mainInitCompleted = true;
 
@@ -217,7 +243,7 @@ void HTTP::GetResource(HMESSAGE* msg, int Sock, bool header) {
 		Path += std::string(msg->m_sURL);
 	
 	int File = open(Path.c_str(), O_RDONLY); // Opens the requested file
-	char buf[FILE_CHUNK_LEN];
+	char* buf = (char*)malloc(FILE_CHUNK_LEN);
 
 	if (File < 0) {
 		std::cout << "[ERROR] Cannot open file at " << Path << std::endl;
@@ -256,8 +282,8 @@ void HTTP::GetResource(HMESSAGE* msg, int Sock, bool header) {
 		out["Content-Type"] = "image/gif";
 	} else {
 		out["Content-Type"] = "*/*";
-	}
-
+	} // Add a condition for config files that would make it so that if the browser requests a config file it will
+	  // open it in a config customization webpage, but only if from the Dashboard thread and ask for authorization
 	int fSize = 0; // Length of the requested file
 	struct stat64 statBuf; 
 	fSize = fstat64(File, &statBuf); // Finds the length of the requested file
@@ -351,9 +377,12 @@ HMESSAGE::HMESSAGE(std::string in) {
 					continue;						// they somehow managed to squeek by to this point
 
 				headerLine[idx] += in[i]; // Adds the current character to which ever side of the line being worked on
+				continue;
 			}
 			m_sContent += in[i]; // Dumps the rest of the data in the request to content after the flag is set
 		}
+
+	bool contentValue = false; // Flag for if the loop has hit the = sign
 
 	if (!items.empty() && items.size() > 2) { // Checks to make sure there is actually 3 items in items
 		if (items[0] == "GET") 			// Checks what type of request it is, don't know if there is a better way to do
@@ -379,6 +408,32 @@ HMESSAGE::HMESSAGE(std::string in) {
 
 		m_sURL = items[1]; // Both of these just take the appropriate item from the vector of items and puts it in the
 		m_sVersion = items[2]; // proper variable
+
+		if (!m_sContent.empty() && m_iType == REQTYPE::POST) { // Reads the content variables for post requests, 
+			for (auto& i : m_sContent) { // treats = as spaces and ; as new lines as the logic is very similar to parsing
+				if (i == ';' || i == '\r' || i == '\n') { // Headers also find out if post requests are the only ones that have content variables
+					m_mVars[headerLine[0]] = headerLine[1];
+					headerLine[0].clear();
+					headerLine[1].clear();
+					idx = 0;
+					continue;
+				}
+				if (i == ':' || i == '=') {
+					idx = 1;
+					continue;
+				}
+				if (i == '\r' || i == '\n')
+					continue;
+				
+				headerLine[idx] += i;
+				continue;
+			}
+
+			m_mVars[headerLine[0]] = headerLine[1];
+			headerLine[0].clear();
+			headerLine[1].clear();
+			idx = 0;
+		}
 
 		items.clear(); // Not really necessary but clears the vector of items, saves something like 20 bytes of memory
 		return;
@@ -413,27 +468,14 @@ HMESSAGE HMESSAGE::ErrorMessage() { // eventually add error message
 }
 
 void HTTP::HouseKeeper() { // for some reason, this only works if opera connects? what?
-	while(1) {	// This code causes seg faults sometimes, need to add some metric in order to do this without
-		//for (int i = 0; i < m_vConnections.size(); i++) {	// seg faulting because this is necessary functionality
-			//if ((std::clock() - m_vConnections[i].m_cTimer) > CONNECTION_TIMEOUT && m_vConnections[i].m_cTimer > 0 && !m_vConnections[i].m_bShouldQuit) {
-				/*if (m_vConnections[i].m_thread.joinable()) {
-					pthread_cancel(m_vConnections[i].m_thread.native_handle());
-					m_vConnections[i].m_thread.detach();
-
-					std::ostringstream oss;
-
-					oss << "HTTP/1.1 200 OK\r\n";
-					oss << "Connection: close\r\n";
-					oss << "Content-Type: text/html; charset=utf-8\r\n";
-
-					write(m_vConnections[i].m_iSocket, oss.str().c_str(), oss.str().size());
-
-					close(m_vConnections[i].m_iSocket);
-
-					std::cout << "[CLOSED] Closed " << m_vConnections[i].m_iSocket << std::endl;
-				}*/
-
-				/*std::cout << "It's been " << (std::clock() - m_vConnections[i].m_cTimer) << " microseconds on socket " << m_vConnections[i].m_iSocket << std::endl;
+	if (m_vConnections.size() < 1)
+		return;
+	std::cout << "Testing the Housekeeper loop" << char(89) << std::endl;
+	for (int i = 0; i < m_vConnections.size(); i++) {	// seg faulting because this is necessary functionality
+		//if ((std::clock() - m_vConnections[i].m_cTimer) > CONNECTION_TIMEOUT && m_vConnections[i].m_cTimer > 0 && !m_vConnections[i].m_bShouldQuit) {
+			/*if (m_vConnections[i].m_thread.joinable()) {
+				pthread_cancel(m_vConnections[i].m_thread.native_handle());
+				m_vConnections[i].m_thread.detach();
 
 				std::ostringstream oss;
 
@@ -442,24 +484,37 @@ void HTTP::HouseKeeper() { // for some reason, this only works if opera connects
 				oss << "Content-Type: text/html; charset=utf-8\r\n";
 
 				write(m_vConnections[i].m_iSocket, oss.str().c_str(), oss.str().size());
-				m_vConnections[i].m_bShouldQuit = true;
 
 				close(m_vConnections[i].m_iSocket);
 
 				std::cout << "[CLOSED] Closed " << m_vConnections[i].m_iSocket << std::endl;
+			}*/
 
-				m_vConnections.erase(std::next(m_vConnections.begin(), i));*/
+			/*std::cout << "It's been " << (std::clock() - m_vConnections[i].m_cTimer) << " microseconds on socket " << m_vConnections[i].m_iSocket << std::endl;
 
-				//pthread_cancel(m_vConnections[i].m_thread.native_handle());
-				//m_vConnections[i].m_thread.join();
+			std::ostringstream oss;
 
-				// Send the connection close stuff, if that doesn't kill the socket on its own then 
-				// close the socket of the connection which will cause the read call in the loop to end
-			//}
+			oss << "HTTP/1.1 200 OK\r\n";
+			oss << "Connection: close\r\n";
+			oss << "Content-Type: text/html; charset=utf-8\r\n";
 
-			//std::cout << "Testing the Housekeeper loop" << std::endl;
-			//sleep(1000000);
+			write(m_vConnections[i].m_iSocket, oss.str().c_str(), oss.str().size());
+			m_vConnections[i].m_bShouldQuit = true;
+
+			close(m_vConnections[i].m_iSocket);
+
+			std::cout << "[CLOSED] Closed " << m_vConnections[i].m_iSocket << std::endl;
+
+			m_vConnections.erase(std::next(m_vConnections.begin(), i));*/
+
+			//pthread_cancel(m_vConnections[i].m_thread.native_handle());
+			//m_vConnections[i].m_thread.join();
+
+			// Send the connection close stuff, if that doesn't kill the socket on its own then 
+			// close the socket of the connection which will cause the read call in the loop to end
 		//}
+
+		//std::cout << "Testing the Housekeeper loop: " << i << std::endl;
 	}
 }
 /*
